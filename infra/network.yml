@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS CloudFormation template to create a new VPC
+  or use an existing VPC for ECS deployment
+  in Create Cluster Wizard. Requires exactly 1
+  Instance Types for a Spot Request.
+Parameters:
+  VpcId:
+    Type: String
+    Description: >
+      Optional - Specifies the ID of an existing VPC in which to launch
+      your container instances. If you specify a VPC ID, you must specify a list of
+      existing subnets in that VPC. If you do not specify a VPC ID, a new VPC is created
+      with atleast 1 subnet.
+    Default: ''
+    ConstraintDescription: >
+      VPC Id must begin with 'vpc-' or leave blank to have a
+      new VPC created
+  VpcCidr:
+    Type: String
+    Description: Optional - Specifies the CIDR Block of VPC
+    Default: '10.0.0.0/16'
+  SubnetCidr1:
+    Type: String
+    Description: Specifies the CIDR Block of Subnet 1
+    Default: '10.0.0.0/24'
+  SubnetCidr2:
+    Type: String
+    Description: Specifies the CIDR Block of Subnet 2
+    Default: '10.0.1.0/24'
+  SubnetCidr3:
+    Type: String
+    Description: Specifies the CIDR Block of Subnet 3
+    Default: ''
+  VpcAvailabilityZones:
+    Type: CommaDelimitedList
+    Description: >
+      Specifies a comma-separated list of 3 VPC Availability Zones for
+      the creation of new subnets. These zones must have the available status.
+    Default: 'us-west-2a,us-west-2b,us-west-2c,us-west-2d'
+Conditions:
+  CreateNewVpc:
+    !Equals [!Ref VpcId, '']
+  CreateSubnet1: !And
+    - !Not [!Equals [!Ref SubnetCidr1, '']]
+    - !Condition CreateNewVpc
+  CreateSubnet2: !And
+    - !Not [!Equals [!Ref SubnetCidr2, '']]
+    - !Condition CreateSubnet1
+  CreateSubnet3: !And
+    - !Not [!Equals [!Ref SubnetCidr3, '']]
+    - !Condition CreateSubnet2
+Resources:
+  Vpc:
+    Condition: CreateNewVpc
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  PubSubnetAz1:
+    Condition: CreateSubnet1
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref SubnetCidr1
+      AvailabilityZone: !Select [ 0, !Ref VpcAvailabilityZones ]
+      MapPublicIpOnLaunch: true
+  PubSubnetAz2:
+    Condition: CreateSubnet2
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref SubnetCidr2
+      AvailabilityZone: !Select [ 1, !Ref VpcAvailabilityZones ]
+      MapPublicIpOnLaunch: true
+  PubSubnetAz3:
+    Condition: CreateSubnet3
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref SubnetCidr3
+      AvailabilityZone: !Select [ 2, !Ref VpcAvailabilityZones ]
+      MapPublicIpOnLaunch: true
+  InternetGateway:
+    Condition: CreateSubnet1
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Condition: CreateSubnet1
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+  RouteViaIgw:
+    Condition: CreateSubnet1
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PublicRouteViaIgw:
+    Condition: CreateSubnet1
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteViaIgw
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PubSubnet1RouteTableAssociation:
+    Condition: CreateSubnet1
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PubSubnetAz1
+      RouteTableId: !Ref RouteViaIgw
+  PubSubnet2RouteTableAssociation:
+    Condition: CreateSubnet2
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PubSubnetAz2
+      RouteTableId: !Ref RouteViaIgw
+  PubSubnet3RouteTableAssociation:
+    Condition: CreateSubnet3
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PubSubnetAz3
+      RouteTableId: !Ref RouteViaIgw
+Outputs:
+  PubSubnetAz1:
+    Condition: CreateSubnet1
+    Value: !Ref PubSubnetAz1
+  PubSubnetAz2:
+    Condition: CreateSubnet2
+    Value: !Ref PubSubnetAz2
+  Vpc:
+    Condition: CreateSubnet1
+    Value: !Ref Vpc

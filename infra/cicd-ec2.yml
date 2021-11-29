@@ -1,0 +1,365 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Template creates Codebuild resources for a simple SAM Application
+Parameters:
+  arm64DotNetSdkUrl:
+    Type: String
+    Default: https://download.visualstudio.microsoft.com/download/pr/adcd9310-5072-4179-9b8b-16563b897995/15a7595966f488c74909e4a9273c0e24/dotnet-sdk-6.0.100-linux-arm64.tar.gz
+  x86DotNetSdkUrl:
+    Type: String
+    Default: https://download.visualstudio.microsoft.com/download/pr/17b6759f-1af0-41bc-ab12-209ba0377779/e8d02195dbf1434b940e0f05ae086453/dotnet-sdk-6.0.100-linux-x64.tar.gz
+Resources:
+  CodeBuildIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'codebuild-full-access-${AWS::Region}'
+      Description: Provides Codebuild permission to access API GW, Lambda and Cloudformation
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "codebuild.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      Path: '/service-role/'
+      Policies:
+        - PolicyName: !Sub 'codebuild-access-cloudwatch-s3-${AWS::Region}'
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Resource: 
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:*"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+              - Effect: "Allow"
+                Resource: "arn:aws:s3:::reinvent2021-graviton2-dotnet6/*"
+                Action: 
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+              - Effect: "Allow"
+                Resource:
+                  - "arn:aws:s3:::reinvent2021-graviton2-dotnet6"
+                Action:
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+              - Effect: "Allow"
+                Action: 
+                  - "codebuild:CreateReportGroup"
+                  - "codebuild:CreateReport"
+                  - "codebuild:UpdateReport"
+                  - "codebuild:BatchPutTestCases"
+                  - "codebuild:BatchPutCodeCoverages"
+                Resource: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/*"
+  CodePipelineServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub AWS-CodePipeline-Service-${AWS::StackName}
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - 'iam:PassRole'
+                Resource: '*'
+                Effect: Allow
+                Condition:
+                  StringEqualsIfExists:
+                    'iam:PassedToService':
+                      - cloudformation.amazonaws.com
+                      - ec2.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+              - Action:
+                  - 'codestar-connections:UseConnection'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'codedeploy:CreateDeployment'
+                  - 'codedeploy:GetApplication'
+                  - 'codedeploy:GetApplicationRevision'
+                  - 'codedeploy:GetDeployment'
+                  - 'codedeploy:GetDeploymentConfig'
+                  - 'codedeploy:RegisterApplicationRevision'
+                  - 'codecommit:*'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'ec2:*'
+                  - 'cloudwatch:*'
+                  - 's3:*'
+                  - 'cloudformation:*'
+                  - 'ecs:*'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:StartBuild'
+                Resource: '*'
+                Effect: Allow
+              - Effect: Allow
+                Action:
+                  - 'ecr:DescribeImages'
+                Resource: '*'
+  Ec2ArmCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: EC2ArmProject
+      Description: Build process for an ARM Application deployed to an EC2 instance
+      ServiceRole: !GetAtt CodeBuildIAMRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+        Location: reinvent2021-graviton2-dotnet6
+        Name: code-build-artifacts
+        Path: ''
+        NamespaceType: NONE
+        Packaging: NONE
+      Environment:
+        Type: ARM_CONTAINER
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:2.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+      Source:
+        Type: CODEPIPELINE
+        InsecureSsl: false
+        BuildSpec: buildspec-ec2.yml
+      BadgeEnabled: false
+      LogsConfig:
+        CloudWatchLogs: 
+          Status: ENABLED
+      TimeoutInMinutes: 10
+  ArmCodeDeployApp:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: arm64-dotnet6
+      ComputePlatform: Server
+  ArmCodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref ArmCodeDeployApp
+      ServiceRoleArn: arn:aws:iam::880455283429:role/CodeDeployServiceRole
+      Ec2TagFilters:
+        - Key: reinvent-arm-demo
+          Type: KEY_ONLY
+  Ec2ArmPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: EC2-arm64-Pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: reinvent2021-graviton2-dotnet6
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                RepositoryName: AspNet6WebApiBenchmarks
+                BranchName: main
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact      
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ProjectName: !Ref Ec2ArmCodeBuildProject
+                EnvironmentVariables: !Sub >-
+                  [
+                    { "name": "DOTNET_SDK_URL", "value": "${arm64DotNetSdkUrl}" }
+                  ]
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeploy
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ApplicationName: !Ref ArmCodeDeployApp
+                DeploymentGroupName: !Ref ArmCodeDeployDeploymentGroup
+              InputArtifacts:
+                - Name: BuildArtifact
+  Ec2x86CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: EC2x86_64Project
+      Description: Build process for an x86 64-bit Application deployed to an EC2 instance
+      ServiceRole: !GetAtt CodeBuildIAMRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+        Location: reinvent2021-graviton2-dotnet6
+        Name: code-build-artifacts
+        Path: ''
+        NamespaceType: NONE
+        Packaging: NONE
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+      Source:
+        Type: CODEPIPELINE
+        InsecureSsl: false
+        BuildSpec: buildspec-ec2.yml
+      BadgeEnabled: false
+      LogsConfig:
+        CloudWatchLogs: 
+          Status: ENABLED
+      TimeoutInMinutes: 10
+  x86CodeDeployApp:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: x86_64-dotnet6
+      ComputePlatform: Server
+  x86CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref x86CodeDeployApp
+      ServiceRoleArn: arn:aws:iam::880455283429:role/CodeDeployServiceRole
+      Ec2TagFilters:
+        - Key: reinvent-x86-demo
+          Type: KEY_ONLY
+  Ec2x86Pipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: EC2-x86_64-Pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: reinvent2021-graviton2-dotnet6
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                RepositoryName: AspNet6WebApiBenchmarks
+                BranchName: main
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact      
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ProjectName: !Ref Ec2x86CodeBuildProject
+                EnvironmentVariables: !Sub >-
+                  [
+                    { "name": "DOTNET_SDK_URL", "value": "${x86DotNetSdkUrl}" }
+                  ]
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeploy
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ApplicationName: !Ref x86CodeDeployApp
+                DeploymentGroupName: !Ref x86CodeDeployDeploymentGroup
+              InputArtifacts:
+                - Name: BuildArtifact
+  AmazonCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: cwe-lambda-arm-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Ec2ArmPipeline}'
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Ec2x86Pipeline}'
+  AmazonCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:AspNet6WebApiBenchmarks'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - main
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Ec2ArmPipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: ec2-arm64-codepipeline-trigger
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Ec2x86Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: ec2-x86_64-codepipeline-trigger

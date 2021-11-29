@@ -1,0 +1,35 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: An AWS Serverless Application.
+Resources:
+  Get:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      FunctionName: Arm64-Net6
+      Architectures: [ 'arm64' ]
+      PackageType: Image
+      ImageConfig:
+        EntryPoint:
+          - /lambda-entrypoint.sh
+        Command:
+          - 'EC2BenchmarkingNet6::BenchmarkWebAPI.Lambda.Function::Get'
+      ImageUri: ''
+      MemorySize: 1792
+      Timeout: 30
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        RootGet:
+          Type: Api
+          Properties:
+            Path: /
+            Method: GET
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: .
+      DockerTag: 'latest'
+      BuildMethod: provided.al2
+Outputs:
+  ApiURL:
+    Description: API endpoint URL for Prod environment
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"

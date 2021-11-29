@@ -1,0 +1,29 @@
+version: 0.2
+phases:
+  install:
+    commands:
+      - curl $DOTNET_SDK_URL -o dotnet-sdk-6.tar.gz
+      - mkdir -p $HOME/dotnet && tar zxf dotnet-sdk-6.tar.gz -C $HOME/dotnet
+      - export DOTNET_ROOT=$HOME/dotnet
+      - export PATH=$HOME/dotnet:$PATH
+      - dotnet tool install -g Amazon.ECS.Tools
+  pre_build:
+    commands:
+      - BUILD_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-8)
+      - IMAGE_TAG=$ECR_REPO_NAME:$RUNTIME_ID-build-$BUILD_ID
+      - echo BUILD_ID=$BUILD_ID
+      - echo CONTAINER_NAME=$CONTAINER_NAME
+      - echo IMAGE_TAG=$IMAGE_TAG
+  build:
+    commands:
+      - cd ./WebApi
+      - dotnet ecs push-image -t $IMAGE_TAG -dbo "--build-arg BUILD_ID=$BUILD_ID"
+  post_build:
+    commands:
+      - echo Writing image definition file...
+      - printf '[{"name":"%s","imageUri":"%s/%s"}]' $CONTAINER_NAME $ECR_URI $IMAGE_TAG > imagedefinitions.json
+      - cat imagedefinitions.json
+artifacts:
+  files:
+    - WebApi/imagedefinitions.json
+  discard-paths: yes

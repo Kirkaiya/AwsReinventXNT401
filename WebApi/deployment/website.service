@@ -1,0 +1,16 @@
+[Unit]
+Description=Start the Website
+
+[Service]
+WorkingDirectory=/var/www/
+ExecStart=/home/ssm-user/dotnet/dotnet /var/www/EC2BenchmarkingNet6.dll
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+SyslogIdentifier=website
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_PRINT_TELEMETRY_MESSAGE=false
+Environment=ASPNETCORE_URLS=http://*:80
+
+[Install]
+WantedBy=multi-user.target

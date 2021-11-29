@@ -1,0 +1,20 @@
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /var/www
+  - source: /deployment/website.service
+    destination: /etc/systemd/system
+hooks:
+    ApplicationStop:
+      - location: deployment/application_stop.sh
+        timeout: 10
+        runas: root
+    BeforeInstall:
+      - location: deployment/before_install.sh
+        timeout: 10
+        runas: root
+    ApplicationStart:
+      - location: deployment/application_start.sh
+        timeout: 10
+        runas: root
