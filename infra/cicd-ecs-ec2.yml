@@ -3,10 +3,9 @@ Description: Deploys CodeBuild, CodePipeline and CodeDeploy for .NET to an Elast
 Parameters:
   ArtifactS3BucketName:
     Type: String
-    Default: reinvent2021-graviton2-dotnet6
   CodeCommitRepoName:
     Type: String
-    Default: AspNet6WebApiBenchmarks
+    Default: DotNet6ArmSample
   x86EcsClusterName:
     Type: String
     Description: Name of the Amazon ECS cluster running the service that is the target of the CI/CD pipeline.

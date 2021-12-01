@@ -1,0 +1,23 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS CloudFormation template to create a AWS CodeCommit repository to clone the project to.
+Parameters:
+  GitRepoName:
+    Type: String
+    Description: Optional - Provide the name for the AWS CodeCommit repository
+    Default: 'DotNet6ArmSample'
+  ArtifactS3BucketName:
+    Type: String
+    Description: Name of the S3 bucket used by the CI/CD pipelines
+Resources:
+  Repository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryDescription: Repository for ASP.NET 6 application and Lambda function used to demonstrate using ARM on AWS
+      RepositoryName: !Ref GitRepoName
+  ArtifactS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ArtifactS3BucketName
+        
+    

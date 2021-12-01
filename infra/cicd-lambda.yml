@@ -3,10 +3,9 @@ Description: Template creates Codebuild resources for a simple SAM Application
 Parameters:
   ArtifactS3BucketName:
     Type: String
-    Default: reinvent2021-graviton2-dotnet6
   CodeCommitRepoName:
     Type: String
-    Default: AspNet6WebApiBenchmarks
+    Default: DotNet6ArmSample
   Arm64LambdaFunctionName:
     Type: String
     Default: Arm64-Net6
