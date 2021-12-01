@@ -1,6 +1,11 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: Template creates Codebuild resources for a simple SAM Application
 Parameters:
+  ArtifactS3BucketName:
+    Type: String
+  CodeCommitRepoName:
+    Type: String
+    Default: DotNet6ArmSample
   arm64DotNetSdkUrl:
     Type: String
     Default: https://download.visualstudio.microsoft.com/download/pr/adcd9310-5072-4179-9b8b-16563b897995/15a7595966f488c74909e4a9273c0e24/dotnet-sdk-6.0.100-linux-arm64.tar.gz
@@ -8,11 +13,25 @@ Parameters:
     Type: String
     Default: https://download.visualstudio.microsoft.com/download/pr/17b6759f-1af0-41bc-ab12-209ba0377779/e8d02195dbf1434b940e0f05ae086453/dotnet-sdk-6.0.100-linux-x64.tar.gz
 Resources:
+  CodeDeployIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Provides CodeDeploy permissions needed for ARM sample project
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "codedeploy.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      Path: '/service-role/'
   CodeBuildIAMRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub 'codebuild-full-access-${AWS::Region}'
-      Description: Provides Codebuild permission to access API GW, Lambda and Cloudformation
+      Description: Provides CodeBuild permission to access API GW, Lambda and Cloudformation
       AssumeRolePolicyDocument: 
         Version: "2012-10-17"
         Statement:
@@ -37,14 +56,13 @@ Resources:
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
               - Effect: "Allow"
-                Resource: "arn:aws:s3:::reinvent2021-graviton2-dotnet6/*"
+                Resource: !Sub "arn:aws:s3:::${ArtifactS3BucketName}/*"
                 Action: 
                   - "s3:PutObject"
                   - "s3:GetObject"
                   - "s3:GetObjectVersion"
               - Effect: "Allow"
-                Resource:
-                  - "arn:aws:s3:::reinvent2021-graviton2-dotnet6"
+                Resource: !Sub "arn:aws:s3:::${ArtifactS3BucketName}/*"
                 Action:
                   - "s3:GetBucketAcl"
                   - "s3:GetBucketLocation"
@@ -122,7 +140,7 @@ Resources:
       ServiceRole: !GetAtt CodeBuildIAMRole.Arn
       Artifacts:
         Type: CODEPIPELINE
-        Location: reinvent2021-graviton2-dotnet6
+        Location: !Ref ArtifactS3BucketName
         Name: code-build-artifacts
         Path: ''
         NamespaceType: NONE
@@ -153,7 +171,7 @@ Resources:
     Type: AWS::CodeDeploy::DeploymentGroup
     Properties:
       ApplicationName: !Ref ArmCodeDeployApp
-      ServiceRoleArn: arn:aws:iam::880455283429:role/CodeDeployServiceRole
+      ServiceRoleArn: arn:aws:iam:::role/CodeDeployServiceRole
       Ec2TagFilters:
         - Key: reinvent-arm-demo
           Type: KEY_ONLY
@@ -164,7 +182,7 @@ Resources:
       RoleArn: !GetAtt CodePipelineServiceRole.Arn
       ArtifactStore:
         Type: S3
-        Location: reinvent2021-graviton2-dotnet6
+        Location: !Ref ArtifactS3BucketName
       Stages:
         - Name: Source
           Actions:
@@ -176,7 +194,7 @@ Resources:
                 Version: '1'
               RunOrder: 1
               Configuration:
-                RepositoryName: AspNet6WebApiBenchmarks
+                RepositoryName: !Ref CodeCommitRepoName
                 BranchName: main
                 PollForSourceChanges: false
               OutputArtifacts:
@@ -222,7 +240,7 @@ Resources:
       ServiceRole: !GetAtt CodeBuildIAMRole.Arn
       Artifacts:
         Type: CODEPIPELINE
-        Location: reinvent2021-graviton2-dotnet6
+        Location: !Ref ArtifactS3BucketName
         Name: code-build-artifacts
         Path: ''
         NamespaceType: NONE
@@ -264,7 +282,7 @@ Resources:
       RoleArn: !GetAtt CodePipelineServiceRole.Arn
       ArtifactStore:
         Type: S3
-        Location: reinvent2021-graviton2-dotnet6
+        Location: !Ref ArtifactS3BucketName
       Stages:
         - Name: Source
           Actions:
@@ -276,7 +294,7 @@ Resources:
                 Version: '1'
               RunOrder: 1
               Configuration:
-                RepositoryName: AspNet6WebApiBenchmarks
+                RepositoryName: !Ref CodeCommitRepoName
                 BranchName: main
                 PollForSourceChanges: false
               OutputArtifacts:
@@ -347,7 +365,7 @@ Resources:
         detail-type:
           - 'CodeCommit Repository State Change'
         resources:
-          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:AspNet6WebApiBenchmarks'
+          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepoName}'
         detail:
           event:
             - referenceCreated
