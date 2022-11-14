@@ -7,6 +7,6 @@ WORKDIR /src
 COPY . .
 RUN dotnet publish "LambdaFunction/LambdaFunction.csproj" -c Release -r $RUNTIME_ID --no-self-contained -o /app/publish -p:InformationalVersion=$BUILD_ID
 
-FROM base AS final
+FROM public.ecr.aws/lambda/dotnet:6 AS final
 WORKDIR /var/task
 COPY --from=build /app/publish .
