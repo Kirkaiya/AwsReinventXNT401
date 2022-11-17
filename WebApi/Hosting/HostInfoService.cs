@@ -15,7 +15,7 @@ namespace BenchmarkWebAPI.Hosting
 
         public HostInfo GetHostInfo() {
             var hostInfo = new HostInfo {
-                BuildId = $"Let's keep building {_buildId}",
+                BuildId = $"You guys are awesome {_buildId}",
                 HostName = _hostName,
                 IsRunningInContainer = _isRunningInContainer,
                 FrameworkDescription = RuntimeInformation.FrameworkDescription,
