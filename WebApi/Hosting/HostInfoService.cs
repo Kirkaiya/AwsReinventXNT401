@@ -15,7 +15,7 @@ namespace BenchmarkWebAPI.Hosting
 
         public HostInfo GetHostInfo() {
             var hostInfo = new HostInfo {
-                BuildId = $"Graviton all the way {_buildId}",
+                BuildId = $"Let's keep building {_buildId}",
                 HostName = _hostName,
                 IsRunningInContainer = _isRunningInContainer,
                 FrameworkDescription = RuntimeInformation.FrameworkDescription,
