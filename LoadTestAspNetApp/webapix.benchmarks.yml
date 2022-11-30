@@ -1,0 +1,79 @@
+imports:
+  - https://raw.githubusercontent.com/Kirkaiya/crank7/master/src/Microsoft.Crank.Jobs.Bombardier/bombardier.yml
+
+jobs:
+  server:
+    source:
+      localFolder: ../../samples/aspnet
+      project: aspnet.csproj
+    readyStateText: Application started.
+    waitForExit: false
+
+scenarios:
+  AsyncParallelJson100:
+    application:
+      job: server
+    load:
+      job: bombardier
+      variables:
+        serverPort: 5000
+        path: /jsonserialize?count=100
+  
+  AsyncParallelJson500:
+    application:
+      job: server
+    load:
+      job: bombardier
+      variables:
+        serverPort: 5000
+        path: /jsonserialize?count=500
+
+  ParallelEncryptWeather100:
+    application:
+      job: server
+    load:
+      job: bombardier
+      variables:
+        serverPort: 5000
+        path: /weatherforecast?count=100
+
+  ParallelEncryptWeather500:
+    application:
+      job: server
+    load:
+      job: bombardier
+      variables:
+        serverPort: 5000
+        path: /weatherforecast?count=500
+
+profiles:
+  local:
+    variables:
+      serverAddress: localhost
+    jobs: 
+      application:
+        endpoints: 
+          - http://localhost:5010
+      load:
+        endpoints: 
+          - http://localhost:5010
+  x64:
+    variables:
+      serverAddress: 172.31.40.5
+    jobs: 
+      application:
+        endpoints: 
+          - http://172.31.40.5:5010
+      load:
+        endpoints: 
+          - http://172.31.40.5:5010
+  arm64:
+    variables:
+      serverAddress: 172.31.2.80
+    jobs: 
+      application:
+        endpoints: 
+          - http://172.31.2.80:5010
+      load:
+        endpoints: 
+          - http://172.31.2.80:5010
