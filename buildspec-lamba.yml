@@ -1,0 +1,24 @@
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - BUILD_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-8)
+      - IMAGE_URI=$ECR_REPO_URI:$RUNTIME_ID-build-$BUILD_ID
+      - echo BUILD_ID=$BUILD_ID
+      - echo ECR_REPO_URI=$ECR_REPO_URI
+      - echo ECR_URI=$ECR_URI
+      - echo IMAGE_URI=$IMAGE_URI
+      - echo RUNTIME_ID=$RUNTIME_ID
+      - echo LAMBDA_FUNCTION_NAME=$LAMBDA_FUNCTION_NAME
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Entered the build phase ...
+      #Lambda deploy reference
+      #https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-deploying.html
+      #Build spec reference
+      #https://docs.aws.amazon.com/codebuild/latest/userguide/build-spec-ref.html
+      - aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_URI
+      - docker build -f LambdaFunction/Dockerfile --build-arg BUILD_ID=$BUILD_ID --build-arg RUNTIME_ID=$RUNTIME_ID --build-arg ECR_URI=$ECR_URI -t $IMAGE_URI .
+      - docker push $IMAGE_URI
+      - aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --image-uri $IMAGE_URI

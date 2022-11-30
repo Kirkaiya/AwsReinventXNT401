@@ -1,0 +1,339 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Template creates Codebuild resources for a simple SAM Application
+Parameters:
+  ArtifactS3BucketName:
+    Type: String
+  CodeCommitRepoName:
+    Type: String
+    Default: DotNet6ArmSample
+  Arm64LambdaFunctionName:
+    Type: String
+    Default: Arm64-Net6
+  x86LambdaFunctionName:
+    Type: String
+    Default: x86-Net6
+Resources:
+  CodeBuildIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'codebuild-sam-full-access-${AWS::Region}'
+      Description: Provides Codebuild permission to access API GW, Lambda and Cloudformation
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "codebuild.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess
+      Path: '/service-role/'
+      Policies:
+        - PolicyName: !Sub 'codebuild-access-cloudwatch-s3-${AWS::Region}'
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Resource: 
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:*"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+              - Effect: "Allow"
+                Resource: !Sub "arn:aws:s3:::${ArtifactS3BucketName}/*"
+                Action: 
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+              - Effect: "Allow"
+                Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactS3BucketName}"
+                Action:
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+              - Effect: "Allow"
+                Action: 
+                  - "codebuild:CreateReportGroup"
+                  - "codebuild:CreateReport"
+                  - "codebuild:UpdateReport"
+                  - "codebuild:BatchPutTestCases"
+                Resource: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/*"
+              - Effect: "Allow"
+                Action:
+                  - "iam:AttachRolePolicy"
+                  - "iam:DeleteRole"
+                  - "iam:DetachRolePolicy"
+                  - "iam:GetRole"
+                  - "iam:PassRole"
+                  - "iam:CreateRole"
+                  - "iam:TagRole"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/graviton2-sam-application-GetRole*"
+  CodePipelineServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub AWS-CodePipeline-Service-${AWS::StackName}
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - 'iam:PassRole'
+                Resource: '*'
+                Effect: Allow
+                Condition:
+                  StringEqualsIfExists:
+                    'iam:PassedToService':
+                      - cloudformation.amazonaws.com
+                      - ec2.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+              - Action:
+                  - 'codestar-connections:UseConnection'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'codedeploy:CreateDeployment'
+                  - 'codedeploy:GetApplication'
+                  - 'codedeploy:GetApplicationRevision'
+                  - 'codedeploy:GetDeployment'
+                  - 'codedeploy:GetDeploymentConfig'
+                  - 'codedeploy:RegisterApplicationRevision'
+                  - 'codecommit:*'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'ec2:*'
+                  - 'cloudwatch:*'
+                  - 's3:*'
+                  - 'cloudformation:*'
+                  - 'ecs:*'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:StartBuild'
+                Resource: '*'
+                Effect: Allow
+              - Effect: Allow
+                Action:
+                  - 'ecr:DescribeImages'
+                Resource: '*'
+  ArmLambdaCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: LambdaArm64Project
+      Description: Build process for an ARM Application deployed to Lambda
+      ServiceRole: !GetAtt CodeBuildIAMRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+        Packaging: NONE
+      Environment:
+        Type: ARM_CONTAINER
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:2.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+      Source:
+        Type: CODEPIPELINE
+        InsecureSsl: false
+        BuildSpec: buildspec-lamba.yml
+      BadgeEnabled: false
+      LogsConfig:
+        CloudWatchLogs: 
+          Status: ENABLED
+      TimeoutInMinutes: 30
+      QueuedTimeoutInMinutes: 15
+  ArmLambdaPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: Lambda-arm64-Pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactS3BucketName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepoName
+                BranchName: main
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact      
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ProjectName: !Ref ArmLambdaCodeBuildProject
+                EnvironmentVariables: !Sub >-
+                  [
+                    { "name": "RUNTIME_ID", "value": "linux-arm64" },
+                    { "name": "ECR_URI", "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com" },
+                    { "name": "ECR_REPO_URI", "value": "${LambdaContainerRepo.RepositoryUri}" },
+                    { "name": "LAMBDA_FUNCTION_NAME", "value": "${Arm64LambdaFunctionName}" }
+                  ]
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact
+  LambdaContainerRepo:
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: net6-g2-sample/lambda
+      RepositoryPolicyText: 
+        Version: "2012-10-17"
+        Statement: 
+          - Sid: AllowPullFromCodeBuild
+            Effect: Allow
+            Principal: 
+              Service: codebuild.amazonaws.com
+            Action: 
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+  x86LambdaCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: Lambdax86_64Project
+      Description: Build process for an x86 64-bit Application deployed to Lambda
+      ServiceRole: !GetAtt CodeBuildIAMRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+        Packaging: NONE
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+      Source:
+        Type: CODEPIPELINE
+        InsecureSsl: false
+        BuildSpec: buildspec-lamba.yml
+      Cache:
+        Type: NO_CACHE
+      BadgeEnabled: false
+      LogsConfig:
+        CloudWatchLogs: 
+          Status: ENABLED
+      TimeoutInMinutes: 30
+      QueuedTimeoutInMinutes: 15
+  x86LambdaPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: Lambda-x86_64-Pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactS3BucketName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepoName
+                BranchName: main
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact      
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ProjectName: !Ref x86LambdaCodeBuildProject
+                EnvironmentVariables: !Sub >-
+                  [
+                    { "name": "RUNTIME_ID", "value": "linux-x64" },
+                    { "name": "ECR_URI", "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com" },
+                    { "name": "ECR_REPO_URI", "value": "${LambdaContainerRepo.RepositoryUri}" },
+                    { "name": "LAMBDA_FUNCTION_NAME", "value": "${x86LambdaFunctionName}" }
+                  ]
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact
+  AmazonCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: cwe-lambda-arm-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ArmLambdaPipeline}'
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${x86LambdaPipeline}'
+  AmazonCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepoName}'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - main
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ArmLambdaPipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: lambda-arm64-codepipeline-trigger
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${x86LambdaPipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: lambda-x86-codepipeline-trigger

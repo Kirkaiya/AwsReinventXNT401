@@ -1,0 +1,23 @@
+version: 0.2
+phases:
+  install:
+    commands:
+      - echo DOTNET_SDK_URL=$DOTNET_SDK_URL
+      - curl $DOTNET_SDK_URL -o dotnet-sdk-6.tar.gz
+      - mkdir -p $HOME/dotnet && tar zxf dotnet-sdk-6.tar.gz -C $HOME/dotnet
+      - export DOTNET_ROOT=$HOME/dotnet
+      - export PATH=$HOME/dotnet:$PATH
+  pre_build:
+    commands:
+      - BUILD_ID=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-8)
+      - echo BUILD_ID=$BUILD_ID
+  build:
+    commands:
+      - dotnet publish "WebApi/EC2BenchmarkingNet6.csproj" -c Release -o /app/publish -p:InformationalVersion=$BUILD_ID
+      - cp appspec.yml /app/publish/appspec.yml
+      - mkdir -p /app/publish/deployment
+      - cp -r WebApi/deployment/ /app/publish/
+artifacts:
+  files:
+    - '**/*'
+  base-directory: /app/publish

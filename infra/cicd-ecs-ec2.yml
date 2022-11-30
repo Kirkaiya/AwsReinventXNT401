@@ -1,0 +1,838 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploys CodeBuild, CodePipeline and CodeDeploy for .NET to an Elastic Container Service cluster
+Parameters:
+  ArtifactS3BucketName:
+    Type: String
+  CodeCommitRepoName:
+    Type: String
+    Default: DotNet6ArmSample
+  x86EcsClusterName:
+    Type: String
+    Description: Name of the Amazon ECS cluster running the service that is the target of the CI/CD pipeline.
+    Default: x86-dotnet-benchmark
+  x86EcsServiceName:
+    Type: String
+    Description: Name of the Amazon ECS service to which the Docker container image is deployed.
+    MaxLength: 255
+    Default: x86-dotnet-benchmark
+  x86TaskContainerName:
+    Type: String
+    Description: The name of the container in a task definition where the Docker container image is deployed.
+    MaxLength: 255
+    Default: x86-dotnet-benchmark
+  x86DotNetSdkUrl:
+    Type: String
+    Default: https://download.visualstudio.microsoft.com/download/pr/17b6759f-1af0-41bc-ab12-209ba0377779/e8d02195dbf1434b940e0f05ae086453/dotnet-sdk-6.0.100-linux-x64.tar.gz
+  x86EcsAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Specifies the AMI ID for your container instances.
+    Default:  'ami-07764a7d8502d36a2' # (us-east-1 ami-0706a79e169de19a2)(us-west-2 ami-07764a7d8502d36a2) /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id as of 9/23/2021
+  x86EcsInstanceType:
+    Type: CommaDelimitedList
+    Description: Specifies the EC2 instance type for your container instances. Defaults to m4.large
+    Default: t3a.2xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  arm64EcsClusterName:
+    Type: String
+    Description: Name of the Amazon ECS cluster running the service that is the target of the CI/CD pipeline.
+    Default: arm64-dotnet-benchmark
+  arm64EcsServiceName:
+    Type: String
+    Description: Name of the Amazon ECS service to which the Docker container image is deployed.
+    MaxLength: 255
+    Default: arm64-dotnet-benchmark
+  arm64TaskContainerName:
+    Type: String
+    Description: The name of the container in a task definition where the Docker container image is deployed.
+    MaxLength: 255
+    Default: arm64-dotnet-benchmark
+  arm64DotNetSdkUrl:
+    Type: String
+    Default: https://download.visualstudio.microsoft.com/download/pr/adcd9310-5072-4179-9b8b-16563b897995/15a7595966f488c74909e4a9273c0e24/dotnet-sdk-6.0.100-linux-arm64.tar.gz
+  arm64EcsAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Specifies the AMI ID for your container instances.
+    Default:  'ami-0230c9b91f02c530e' # (us-east-1 ami-0e4918a711a037cfa)(us-west-2 ami-0230c9b91f02c530e) From /aws/service/ecs/optimized-ami/amazon-linux-2/arm64/recommended/image_id as of 9/23/2021
+  arm64EcsInstanceType:
+    Type: CommaDelimitedList
+    Description: Specifies the EC2 instance type for your container instances. Defaults to m4.large
+    Default: t4g.2xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  ContainerPort:
+    Type: Number
+    Default: 80
+  SubnetId1:
+    Type: String
+  SubnetId2:
+    Type: String
+  VpcId:
+    Type: String
+  MinContainers:
+    Type: Number
+    Default: 1
+  MaxContainers:
+    Type: Number
+    Default: 1
+  AutoScalingTargetValue:
+    Type: Number
+    Default: 75
+  HealthCheckPath:
+    Type: String
+    Default: /
+  LoadBalancerPort:
+    Type: Number
+    Default: 80
+  EbsVolumeSize:
+    Type: Number
+    Description: >
+      Optional - Specifies the Size in GBs of the data storage EBS volume used by the Docker in the AL1 ECS-optimized AMI
+    Default: 22
+  EbsVolumeType:
+    Type: String
+    Description: Optional - Specifies the Type of (Amazon EBS) volume
+    Default: 'gp3'
+    AllowedValues:
+      - standard
+      - io1
+      - gp2
+      - gp3
+      - sc1
+      - st1
+    ConstraintDescription: Must be a valid EC2 volume type.
+  DeviceName:
+    Type: String
+    Description: Optional - Specifies the device mapping for the EBS volume used for data storage. Only applicable to AL1.
+    Default: /dev/xvdcz
+Resources:
+  PublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+  ContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "ECS Security Group"
+      VpcId: !Ref VpcId
+  EcsSecurityGroupIngressFromPublicALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the public ALB
+      GroupId: !Ref ContainerSecurityGroup
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref PublicLoadBalancerSG
+      FromPort: !Ref ContainerPort
+      ToPort: !Ref ContainerPort
+  EcsSecurityGroupALBports:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref ContainerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 31000
+      ToPort: 61000
+      SourceSecurityGroupId: !Ref ContainerSecurityGroup
+  AutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: application-autoscaling.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceAutoscaleRole'
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Action: "sts:AssumeRole"
+          Effect: Allow
+          Principal:
+            Service: ecs-tasks.amazonaws.com
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  EcsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+  EcsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EcsInstanceRole
+  x86LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws-samples/x86-ecs/${x86EcsServiceName}"
+      RetentionInDays: 30
+  x86ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref x86EcsClusterName
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Configuration:
+        ExecuteCommandConfiguration:
+          Logging: DEFAULT
+  x86ECSService: 
+    Type: AWS::ECS::Service
+    DependsOn: x86AlbListenerRule #Need this to ensure ALB is created prior to service
+    Properties: 
+      Cluster: !Ref x86ECSCluster
+      DesiredCount: 1
+      LaunchType: EC2
+      LoadBalancers:
+        - ContainerName: !Ref x86TaskContainerName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref x86TargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+          - !Ref ContainerSecurityGroup
+          Subnets:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      PropagateTags: SERVICE
+      SchedulingStrategy: REPLICA
+      ServiceName: !Ref x86EcsServiceName
+      TaskDefinition: !Ref x86ECSTaskDefinition
+  x86ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+      - Name: !Ref x86TaskContainerName
+        Image: mcr.microsoft.com/dotnet/samples:aspnetapp
+        LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: "true"
+              awslogs-group: !Sub "/aws-samples/x86-ecs/${x86EcsServiceName}"
+              awslogs-stream-prefix: "containers"
+              awslogs-region:  !Ref "AWS::Region"
+        PortMappings:
+          - ContainerPort: !Ref ContainerPort
+      Cpu: '2048'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      Family: x86-demo-app
+      Memory: '4096'
+      NetworkMode: "awsvpc"
+      RequiresCompatibilities:
+        - EC2
+  x86LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+        # this is the default, but is specified here in case it needs to be changed
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref PublicLoadBalancerSG
+      Subnets:
+        - !Ref SubnetId1
+        - !Ref SubnetId2
+  x86TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      UnhealthyThresholdCount: 2
+      HealthyThresholdCount: 2
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '60' # default is 300
+      TargetType: ip
+      VpcId: !Ref VpcId
+  x86ListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref x86TargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref x86LoadBalancer
+      Port: !Ref LoadBalancerPort
+      Protocol: HTTP
+  x86AlbListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref x86TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values: [ '/' ]
+      ListenerArn: !Ref x86ListenerHTTP
+      Priority: 1
+  x86EcsLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref x86EcsAmiId
+      InstanceType: !Select [ 0, !Ref x86EcsInstanceType ]
+      IamInstanceProfile: !Ref EcsInstanceProfile
+      SecurityGroups: [ !Ref ContainerSecurityGroup ]
+      BlockDeviceMappings:
+        - DeviceName: !Ref DeviceName
+          Ebs:
+            VolumeSize: !Ref EbsVolumeSize
+            VolumeType: !Ref EbsVolumeType
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash 
+          echo "ECS_CLUSTER=${x86EcsClusterName}" >> /etc/ecs/ecs.config;
+  x86AutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref SubnetId1
+        - !Ref SubnetId2
+      LaunchConfigurationName: !Ref x86EcsLaunchConfiguration
+      MinSize: !Ref MinContainers
+      MaxSize: !Ref MaxContainers
+      DesiredCapacity: !Ref MinContainers
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+  x86AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref MinContainers
+      MaxCapacity: !Ref MaxContainers
+      ResourceId: !Join ['/', ['service', !Ref x86ECSCluster, !GetAtt x86ECSService.Name]]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      # "The Amazon Resource Name (ARN) of an AWS Identity and Access Management (IAM) role that allows Application Auto Scaling to modify your scalable target."
+      RoleARN: !GetAtt AutoScalingRole.Arn
+  x86AutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${x86EcsServiceName}AutoScalingPolicy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref x86AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 300
+        TargetValue: !Ref AutoScalingTargetValue
+  x86CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: ECS-x86_64-Project
+      Description: Build process for an x86 64-bit Application deployed to ECS
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+        Packaging: NONE
+      Environment:
+        Type: LINUX_CONTAINER
+        Image:  aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+      Source:
+        Type: CODEPIPELINE
+        InsecureSsl: false
+        BuildSpec: buildspec-ecs.yml
+      Cache:
+        Type: NO_CACHE
+      LogsConfig:
+        CloudWatchLogs: 
+          Status: ENABLED
+      TimeoutInMinutes: 30
+      QueuedTimeoutInMinutes: 15
+  x86AppPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: ECS-x86_64-Pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactS3BucketName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepoName
+                BranchName: main
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact      
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ProjectName: !Ref x86CodeBuildProject
+                EnvironmentVariables: !Sub >-
+                  [
+                    { "name": "ECR_URI", "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com" },
+                    { "name": "ECR_REPO_NAME", "value": "${AppContainerRepo}" },
+                    { "name": "RUNTIME_ID", "value": "linux-x64" },
+                    { "name": "CONTAINER_NAME", "value": "${x86TaskContainerName}" }, 
+                    { "name": "DOTNET_SDK_URL", "value": "${x86DotNetSdkUrl}" }
+                  ]
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ClusterName: !Ref x86EcsClusterName
+                ServiceName: !Ref x86EcsServiceName
+              InputArtifacts:
+                - Name: BuildArtifact
+  arm64LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws-samples/arm64-ecs/${arm64EcsServiceName}"
+      RetentionInDays: 30
+  arm64ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref arm64EcsClusterName
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Configuration:
+        ExecuteCommandConfiguration:
+          Logging: DEFAULT
+  arm64ECSService: 
+    Type: AWS::ECS::Service
+    DependsOn: arm64AlbListenerRule #Need this to ensure ALB is created prior to service
+    Properties: 
+      Cluster: !Ref arm64ECSCluster
+      DesiredCount: 1
+      LaunchType: EC2
+      LoadBalancers:
+        - ContainerName: !Ref arm64TaskContainerName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref arm64TargetGroup
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+          - !Ref ContainerSecurityGroup
+          Subnets:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      PropagateTags: SERVICE
+      SchedulingStrategy: REPLICA
+      ServiceName: !Ref arm64EcsServiceName
+      TaskDefinition: !Ref arm64ECSTaskDefinition
+  arm64ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+      - Name: !Ref arm64TaskContainerName
+        Image: mcr.microsoft.com/dotnet/samples:aspnetapp
+        LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: "true"
+              awslogs-group: !Sub "/aws-samples/arm64-ecs/${arm64EcsServiceName}"
+              awslogs-stream-prefix: "containers"
+              awslogs-region:  !Ref "AWS::Region"
+        PortMappings:
+          - ContainerPort: !Ref ContainerPort
+      Cpu: '2048'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      Family: arm64-demo-app
+      Memory: '4096'
+      NetworkMode: "awsvpc"
+      RequiresCompatibilities:
+        - EC2
+  arm64LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+        # this is the default, but is specified here in case it needs to be changed
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref PublicLoadBalancerSG
+      Subnets:
+        - !Ref SubnetId1
+        - !Ref SubnetId2
+  arm64TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      UnhealthyThresholdCount: 2
+      HealthyThresholdCount: 2
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '60' # default is 300
+      TargetType: ip
+      VpcId: !Ref VpcId
+  arm64ListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref arm64TargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref arm64LoadBalancer
+      Port: !Ref LoadBalancerPort
+      Protocol: HTTP
+  arm64AlbListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref arm64TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values: [ '/' ]
+      ListenerArn: !Ref arm64ListenerHTTP
+      Priority: 1
+  arm64EcsLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref arm64EcsAmiId
+      InstanceType: !Select [ 0, !Ref arm64EcsInstanceType ]
+      IamInstanceProfile: !Ref EcsInstanceProfile
+      SecurityGroups: [ !Ref ContainerSecurityGroup ]
+      BlockDeviceMappings:
+        - DeviceName: !Ref DeviceName
+          Ebs:
+            VolumeSize: !Ref EbsVolumeSize
+            VolumeType: !Ref EbsVolumeType
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash 
+          echo "ECS_CLUSTER=${arm64EcsClusterName}" >> /etc/ecs/ecs.config;
+  arm64AutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref SubnetId1
+        - !Ref SubnetId2
+      LaunchConfigurationName: !Ref arm64EcsLaunchConfiguration
+      MinSize: !Ref MinContainers
+      MaxSize: !Ref MaxContainers
+      DesiredCapacity: !Ref MinContainers
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+  arm64AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref MinContainers
+      MaxCapacity: !Ref MaxContainers
+      ResourceId: !Join ['/', ['service', !Ref arm64ECSCluster, !GetAtt arm64ECSService.Name]]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      # "The Amazon Resource Name (ARN) of an AWS Identity and Access Management (IAM) role that allows Application Auto Scaling to modify your scalable target."
+      RoleARN: !GetAtt AutoScalingRole.Arn
+  arm64AutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${arm64EcsServiceName}AutoScalingPolicy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref arm64AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 300
+        TargetValue: !Ref AutoScalingTargetValue
+  arm64CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: ECSArm64Project
+      Description: Build process for an ARM 64-bit Application deployed to ECS
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+        Packaging: NONE
+      Environment:
+        Type: ARM_CONTAINER
+        Image:  aws/codebuild/amazonlinux2-aarch64-standard:2.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
+      Source:
+        Type: CODEPIPELINE
+        InsecureSsl: false
+        BuildSpec: buildspec-ecs.yml
+      Cache:
+        Type: NO_CACHE
+      LogsConfig:
+        CloudWatchLogs: 
+          Status: ENABLED
+      TimeoutInMinutes: 30
+      QueuedTimeoutInMinutes: 15
+  arm64AppPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: ECS-arm64-Pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactS3BucketName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepoName
+                BranchName: main
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact      
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ProjectName: !Ref arm64CodeBuildProject
+                EnvironmentVariables: !Sub >-
+                  [
+                    { "name": "ECR_URI", "value": "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com" },
+                    { "name": "ECR_REPO_NAME", "value": "${AppContainerRepo}" },
+                    { "name": "RUNTIME_ID", "value": "linux-arm64" },
+                    { "name": "CONTAINER_NAME", "value": "${arm64TaskContainerName}" }, 
+                    { "name": "DOTNET_SDK_URL", "value": "${arm64DotNetSdkUrl}" }
+                  ]
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ClusterName: !Ref arm64EcsClusterName
+                ServiceName: !Ref arm64EcsServiceName
+              InputArtifacts:
+                - Name: BuildArtifact
+  AppContainerRepo:
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: net6-g2-sample/ecs
+      RepositoryPolicyText: 
+        Version: "2012-10-17"
+        Statement: 
+          - Sid: AllowPullFromCodeBuild
+            Effect: Allow
+            Principal: 
+              Service: codebuild.amazonaws.com
+            Action: 
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+  CodePipelineServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub AWS-CodePipeline-Service-${AWS::StackName}
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - 'iam:PassRole'
+                Resource: '*'
+                Effect: Allow
+                Condition:
+                  StringEqualsIfExists:
+                    'iam:PassedToService':
+                      - cloudformation.amazonaws.com
+                      - ec2.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+              - Action:
+                  - 'codestar-connections:UseConnection'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'codedeploy:CreateDeployment'
+                  - 'codedeploy:GetApplication'
+                  - 'codedeploy:GetApplicationRevision'
+                  - 'codedeploy:GetDeployment'
+                  - 'codedeploy:GetDeploymentConfig'
+                  - 'codedeploy:RegisterApplicationRevision'
+                  - 'codecommit:*'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'ec2:*'
+                  - 'cloudwatch:*'
+                  - 's3:*'
+                  - 'cloudformation:*'
+                  - 'ecs:*'
+                Resource: '*'
+                Effect: Allow
+              - Action:
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:StartBuild'
+                Resource: '*'
+                Effect: Allow
+              - Effect: Allow
+                Action:
+                  - 'ecr:DescribeImages'
+                Resource: '*'
+  CodeBuildServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: !Sub aws-codebuild-service-${AWS::StackName}
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+                - Effect: Allow
+                  Resource: '*'
+                  Action:
+                  - 'ecr:*'
+                - Effect: Allow
+                  Resource: '*'
+                  Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                - Effect: Allow
+                  Resource: !Sub "arn:aws:s3:::${ArtifactS3BucketName}/*"
+                  Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:GetBucketAcl'
+                  - 's3:GetBucketLocation'
+  AmazonCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: cwe-x86pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${x86AppPipeline}'
+        - PolicyName: cwe-arm64pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${arm64AppPipeline}'
+  AmazonCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepoName}'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - main
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${x86AppPipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: x86-codepipeline-trigger
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${arm64AppPipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: arm64-codepipeline-trigger
